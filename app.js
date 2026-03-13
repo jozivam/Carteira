@@ -1,4 +1,6 @@
 // Antigravity Digital Wallet - App Logic
+const GOOGLE_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbzoYAHXynW3Mrvcg5cHbLj6_SiaQcGr-6Uw1Lsluh51iEnGFOZpduVP9XW2fYMJQ4pt/exec';
+
 const state = {
     currentScreen: 'dashboard',
     prevScreen: 'dashboard',
@@ -17,6 +19,7 @@ const state = {
         { id: 'empresa', name: 'Empresa', balance: 12800.50, icon: 'briefcase', color: '#8b5cf6' },
         { id: 'ticket', name: 'Ticket Alimentação', balance: 450.20, icon: 'utensils', color: '#10b981' }
     ],
+    user: JSON.parse(localStorage.getItem('user')) || { name: 'João Silva', email: 'joao@email.com' },
     transactions: JSON.parse(localStorage.getItem('transactions')) || [
         { id: 1, date: '2024-05-21', description: 'Amazon Prime', amount: -14.90, category: 'Assinaturas', wallet: 'principal', status: 'approved' },
         { id: 2, date: '2024-05-21', description: 'Almoço Executivo', amount: -35.00, category: 'Alimentação', wallet: 'ticket', status: 'pending' },
@@ -53,6 +56,98 @@ function restoreDraft() {
 restoreDraft();
 
 // --- Core Functions ---
+
+window.expandImage = function(url) {
+    const modal = document.createElement('div');
+    modal.style.position = 'fixed';
+    modal.style.top = '0';
+    modal.style.left = '0';
+    modal.style.width = '100vw';
+    modal.style.height = '100vh';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.85)';
+    modal.style.display = 'flex';
+    modal.style.alignItems = 'center';
+    modal.style.justifyContent = 'center';
+    modal.style.zIndex = '9999';
+    modal.style.backdropFilter = 'blur(5px)';
+    modal.style.cursor = 'pointer';
+    
+    const closeBtn = document.createElement('div');
+    closeBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+    closeBtn.style.position = 'absolute';
+    closeBtn.style.top = '24px';
+    closeBtn.style.right = '24px';
+    modal.appendChild(closeBtn);
+    
+    const img = document.createElement('img');
+    img.src = url;
+    img.style.maxWidth = '90%';
+    img.style.maxHeight = '90%';
+    img.style.borderRadius = '12px';
+    img.style.boxShadow = '0 10px 40px rgba(0,0,0,0.3)';
+    img.style.objectFit = 'contain';
+    
+    modal.appendChild(img);
+    modal.onclick = () => modal.remove();
+    document.body.appendChild(modal);
+}
+
+window.shareViaWhatsApp = function(txId) {
+    const tx = state.transactions.find(t => t.id === txId);
+    if (!tx) return;
+    const formattedDate = new Date(tx.date + 'T00:00:00').toLocaleDateString('pt-BR');
+    const amountStr = Math.abs(tx.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+    let text = `Comprovante de ${tx.amount < 0 ? 'Pagamento' : 'Recebimento'}\n\n`;
+    text += `Valor: R$ ${amountStr}\n`;
+    text += `Descrição: ${tx.description}\n`;
+    text += `Data: ${formattedDate}\n`;
+    text += `Categoria: ${tx.category}\n`;
+    text += `ID: M-${tx.id}\n`;
+    if (tx.attachmentUrl) {
+        text += `\nImagem anexa: ${tx.attachmentUrl}`;
+    }
+    
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
+}
+
+window.deleteTransaction = function(txId) {
+    if (confirm('Tem certeza que deseja excluir esta transação?')) {
+        const tx = state.transactions.find(t => t.id === txId);
+        if (tx && tx.status === 'approved') {
+            const walletIdx = state.wallets.findIndex(w => w.id === tx.wallet);
+            if (walletIdx > -1) {
+                state.wallets[walletIdx].balance -= tx.amount;
+            }
+        }
+        state.transactions = state.transactions.filter(t => t.id !== txId);
+        localStorage.setItem('transactions', JSON.stringify(state.transactions));
+        navigate('dashboard');
+    }
+}
+
+window.updateUser = function(key, val) {
+    if (!state.user) state.user = {};
+    state.user[key] = val;
+    localStorage.setItem('user', JSON.stringify(state.user));
+}
+
+window.clearAllData = function() {
+    if (confirm('Tem certeza? Todos os dados serão perdidos.')) {
+        localStorage.clear();
+        location.reload();
+    }
+}
+
+window.sendReportWhatsApp = function() {
+    const companyTxs = state.transactions.filter(t => t.wallet === 'empresa');
+    let text = `Relatório de Prestação de Contas\n\n`;
+    companyTxs.forEach(t => {
+        text += `- ${t.description}: R$ ${Math.abs(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (${t.status})\n`;
+    });
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
+}
 
 function setState(newState) {
     Object.assign(state, newState);
@@ -142,6 +237,21 @@ function saveTransaction(event) {
     const updatedTransactions = [newTx, ...state.transactions];
     localStorage.setItem('transactions', JSON.stringify(updatedTransactions));
     localStorage.removeItem('tx_draft');
+
+    // Enviar para a planilha em segundo plano ou adicionar à fila offline
+    if (!GOOGLE_SHEETS_URL.includes('COLE_AQUI')) {
+        const txSheets = { 
+            ...newTx, 
+            attachmentData: state.inputState.attachmentUrl ? state.inputState.attachmentUrl : null,
+            attachmentName: state.inputState.attachment || null
+        };
+        
+        if (navigator.onLine) {
+            syncToSheets(txSheets);
+        } else {
+            addToOfflineQueue(txSheets);
+        }
+    }
     
     setState({ 
         wallets: updatedWallets, 
@@ -193,6 +303,118 @@ function showTransactionDetails(id) {
     navigate('transactionDetails');
 }
 
+// --- Offline Sync Logic ---
+function addToOfflineQueue(tx) {
+    const queue = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+    queue.push(tx);
+    localStorage.setItem('offlineQueue', JSON.stringify(queue));
+    showToast('Lançamento salvo offline. Sincronização automática quando conectado.', 'warning');
+}
+
+function syncToSheets(tx) {
+    fetch(GOOGLE_SHEETS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(tx)
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.status === 'success' && data.imageUrl) {
+            updateTransactionImage(tx.id, data.imageUrl);
+        }
+    })
+    .catch(err => {
+        console.error('Erro ao sincronizar com Planilha:', err);
+        addToOfflineQueue(tx);
+    });
+}
+
+function processOfflineQueue() {
+    if (!navigator.onLine) return;
+    const queue = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+    if (queue.length === 0) return;
+
+    showToast(`Sincronizando ${queue.length} lançamentos...`, 'info');
+    
+    // Clean queue right away
+    localStorage.setItem('offlineQueue', JSON.stringify([]));
+    
+    let successCount = 0;
+    
+    Promise.all(queue.map(tx => {
+        return fetch(GOOGLE_SHEETS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify(tx)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'success' && data.imageUrl) {
+                updateTransactionImage(tx.id, data.imageUrl);
+            }
+            successCount++;
+        })
+        .catch(err => {
+            console.error('Falha ao sincronizar item offline:', err);
+            // Put it back in queue
+            const currentQueue = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+            currentQueue.push(tx);
+            localStorage.setItem('offlineQueue', JSON.stringify(currentQueue));
+        });
+    })).finally(() => {
+        if (successCount > 0) {
+            showToast(`${successCount} lançamentos sincronizados com sucesso!`, 'success');
+        }
+    });
+}
+
+window.addEventListener('online', processOfflineQueue);
+
+function updateTransactionImage(id, url) {
+    const txIndex = state.transactions.findIndex(t => t.id === id);
+    if (txIndex > -1) {
+        state.transactions[txIndex].attachmentUrl = url;
+        try {
+            localStorage.setItem('transactions', JSON.stringify(state.transactions));
+        } catch(e) {}
+        render();
+    }
+}
+
+function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    const bg = type === 'success' ? 'var(--success)' : (type === 'warning' ? 'var(--warning)' : 'var(--accent-blue)');
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: ${bg};
+        color: white;
+        padding: 12px 24px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 1000;
+        font-weight: 500;
+        animation: slideUp 0.3s ease-out forwards;
+    `;
+    toast.innerText = message;
+    
+    if (!document.querySelector('style#toast-style')) {
+        const style = document.createElement('style');
+        style.id = 'toast-style';
+        style.innerHTML = `@keyframes slideUp { from { transform: translate(-50%, 100%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }`;
+        document.head.appendChild(style);
+    }
+    
+    document.body.appendChild(toast);
+    setTimeout(() => {
+        toast.style.transition = 'opacity 0.3s';
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
 function triggerFileUploadForTx(id) {
     const input = document.createElement('input');
     input.type = 'file';
@@ -211,11 +433,24 @@ function triggerFileUploadForTx(id) {
                     try {
                         localStorage.setItem('transactions', JSON.stringify(state.transactions));
                     } catch(err) {
-                        alert('A imagem é muito grande para ser salva no armazenamento do navegador.');
-                        // revert
-                        state.transactions[txIndex] = originalTx;
+                        alert('A imagem é muito grande para ser salva apenas localmente. Salvando online.');
                     }
                     render();
+                    
+                    // Sincroniza a atualização online
+                    if (!GOOGLE_SHEETS_URL.includes('COLE_AQUI')) {
+                        const txSheets = { 
+                            ...state.transactions[txIndex], 
+                            attachmentData: evt.target.result,
+                            attachmentName: file.name
+                        };
+                        showToast('Enviando comprovante para a nuvem...', 'info');
+                        if (navigator.onLine) {
+                            syncToSheets(txSheets);
+                        } else {
+                            addToOfflineQueue(txSheets);
+                        }
+                    }
                 };
                 reader.readAsDataURL(file);
             }
@@ -405,19 +640,25 @@ const Screens = {
         </div>
     `,
 
-    extract: () => `
+    extract: () => {
+        const grouped = state.transactions.reduce((acc, t) => {
+            if (!acc[t.date]) acc[t.date] = [];
+            acc[t.date].push(t);
+            return acc;
+        }, {});
+        const sortedDates = Object.keys(grouped).sort((a,b) => b.localeCompare(a));
+
+        return `
         <div class="content-area animate-in">
             <h1 class="h1" style="margin-bottom: 24px;">Extrato</h1>
             
             <div style="display: flex; gap: 8px; margin-bottom: 32px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none;">
-                <div class="glass" style="padding: 10px 20px; border-radius: 20px; font-size: 14px; background: var(--accent-blue); border-color: transparent; white-space: nowrap;">Maio 2024</div>
-                <div class="glass" style="padding: 10px 20px; border-radius: 20px; font-size: 14px; white-space: nowrap;">Abril 2024</div>
-                <div class="glass" style="padding: 10px 20px; border-radius: 20px; font-size: 14px; white-space: nowrap;">Filtros</div>
+                <div class="glass" style="padding: 10px 20px; border-radius: 20px; font-size: 14px; background: var(--accent-blue); border-color: transparent; white-space: nowrap;">Todos</div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 32px;">
-                ${['2024-05-21', '2024-05-20', '2024-05-19', '2024-05-18'].map(date => {
-                    const txs = state.transactions.filter(t => t.date === date);
+                ${sortedDates.map(date => {
+                    const txs = grouped[date];
                     if (txs.length === 0) return '';
                     
                     const formattedDate = new Date(date + 'T00:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' });
@@ -452,7 +693,8 @@ const Screens = {
                 }).join('')}
             </div>
         </div>
-    `,
+        `;
+    },
 
     accountability: () => {
         const companyTxs = state.transactions.filter(t => t.wallet === 'empresa');
@@ -470,10 +712,11 @@ const Screens = {
             </header>
 
             <div class="glass-card" style="background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%); margin-bottom: 32px; padding: 24px;">
-                <p class="caption" style="color: rgba(255,255,255,0.8)">Total Aprovado para Reembolso</p>
+                <p class="caption" style="color: rgba(255,255,255,0.8)">Saldo da Empresa</p>
                 <h1 class="amount" style="font-size: 32px; margin: 8px 0; color: white;">
-                    R$ ${approved.reduce((acc, t) => acc + Math.abs(t.amount), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    R$ ${state.wallets.find(w => w.id === 'empresa').balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </h1>
+                <p class="caption" style="color: rgba(255,255,255,0.8); margin-top: 16px; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 12px;">Total Aprovado Reembolso: R$ ${approved.reduce((acc, t) => acc + Math.abs(t.amount), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                 <div style="display: flex; align-items: center; gap: 8px; margin-top: 12px;">
                     <div class="glass" style="padding: 4px 12px; border-radius: 20px; font-size: 11px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: none;">${approved.length} APROVADOS</div>
                     <div class="glass" style="padding: 4px 12px; border-radius: 20px; font-size: 11px; background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: none;">${pending.length} PENDENTES</div>
@@ -518,8 +761,8 @@ const Screens = {
                 }).join('') || '<p class="caption">Nenhuma despesa encontrada.</p>'}
             </div>
             
-            <button class="btn btn-primary" style="width: 100%; margin-top: 32px;" onclick="alert('Relatórios exportados para o RH!')">
-                Exportar Relatório PDF
+            <button class="btn btn-primary" style="width: 100%; margin-top: 32px;" onclick="sendReportWhatsApp()">
+                Enviar Relatório via WhatsApp
             </button>
         </div>
         `;
@@ -538,7 +781,9 @@ const Screens = {
                     ${icon('arrow-left')}
                 </div>
                 <div style="font-weight: 600;">Detalhes</div>
-                <div style="width: 40px;"></div>
+                <div onclick="deleteTransaction(${tx.id})" style="cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.1); border-radius: 50%;">
+                    ${icon('trash-2', 'var(--error)')}
+                </div>
             </header>
 
             <div style="background: white; border-radius: 24px; padding: 32px 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.05); position: relative; overflow: hidden;">
@@ -585,7 +830,7 @@ const Screens = {
                 <div style="margin-top: 40px;">
                     <p style="font-weight: 600; font-size: 14px; margin-bottom: 16px;">Comprovante Anexado</p>
                     ${tx.hasAttachment && tx.attachmentUrl ? `
-                        <div style="border-radius: 16px; overflow: hidden; border: 1px solid rgba(0,0,0,0.1); position: relative; background: #f9fafb; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 160px; background-image: url('${tx.attachmentUrl}'); background-size: cover; background-position: center;">
+                        <div onclick="expandImage('${tx.attachmentUrl}')" style="border-radius: 16px; overflow: hidden; border: 1px solid rgba(0,0,0,0.1); position: relative; background: #f9fafb; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 160px; background-image: url('${tx.attachmentUrl}'); background-size: cover; background-position: center; cursor: pointer;">
                         </div>
                     ` : tx.hasAttachment ? `
                         <div style="border-radius: 16px; overflow: hidden; border: 1px solid rgba(0,0,0,0.1); position: relative; background: #f9fafb; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 160px;">
@@ -603,7 +848,7 @@ const Screens = {
                 </div>
             </div>
             
-            <button class="glass" style="position: fixed; bottom: 32px; right: 32px; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-purple); color: white; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(139, 92, 246, 0.4); border: none; cursor: pointer; z-index: 10;">
+            <button onclick="shareViaWhatsApp(${tx.id})" class="glass" style="position: fixed; bottom: 32px; right: 32px; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-purple); color: white; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 25px rgba(139, 92, 246, 0.4); border: none; cursor: pointer; z-index: 10;">
                 ${icon('share-2', 'white', 24)}
             </button>
         </div>
@@ -654,7 +899,29 @@ const Screens = {
                             <div style="width: 25%; height: 100%; background: var(--accent-purple);"></div>
                         </div>
                     </div>
+            </div>
+        </div>
+    `,
+
+    profile: () => `
+        <div class="content-area animate-in">
+            <h1 class="h1" style="margin-bottom: 24px;">Perfil</h1>
+            <div class="glass-card" style="padding: 24px;">
+                <h2 class="h2">Seus Dados</h2>
+                <div style="margin-top: 16px;">
+                    <label style="font-size: 14px; color: var(--text-secondary);">Nome</label>
+                    <input type="text" value="${state.user?.name || 'Seu Nome'}" onchange="updateUser('name', this.value)" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 8px; margin-top: 4px; font-weight: 500;">
                 </div>
+                <div style="margin-top: 16px;">
+                    <label style="font-size: 14px; color: var(--text-secondary);">Email</label>
+                    <input type="email" value="${state.user?.email || 'seu@email.com'}" onchange="updateUser('email', this.value)" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 8px; margin-top: 4px; font-weight: 500;">
+                </div>
+            </div>
+            
+            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
+                <h2 class="h2">Limpar Dados</h2>
+                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Apague todos os dados locais armazenados no seu dispositivo.</p>
+                <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--error); color: var(--error);" onclick="clearAllData()">Limpar Tudo</button>
             </div>
         </div>
     `
@@ -682,8 +949,8 @@ function renderNavBar() {
                 ${icon('pie-chart', ['report', 'accountability'].includes(state.currentScreen) ? 'var(--accent-blue)' : 'var(--text-secondary)')}
                 <span>Análise</span>
             </div>
-            <div class="nav-item" onclick="alert('Perfil em breve!')">
-                ${icon('user', 'var(--text-secondary)')}
+            <div class="nav-item ${state.currentScreen === 'profile' ? 'active' : ''}" onclick="navigate('profile')">
+                ${icon('user', state.currentScreen === 'profile' ? 'var(--accent-blue)' : 'var(--text-secondary)')}
                 <span>Perfil</span>
             </div>
         </nav>
