@@ -153,7 +153,7 @@ window.expandImage = function(url) {
     document.body.appendChild(modal);
 }
 
-window.shareViaWhatsApp = function(txId) {
+window.shareViaWhatsApp = async function(txId) {
     const tx = state.transactions.find(t => t.id === txId);
     if (!tx) return;
     const formattedDate = new Date(tx.date + 'T00:00:00').toLocaleDateString('pt-BR');
@@ -163,11 +163,29 @@ window.shareViaWhatsApp = function(txId) {
     text += `Descrição: ${tx.description}\n`;
     text += `Data: ${formattedDate}\n`;
     text += `Categoria: ${tx.category}\n`;
-    text += `ID: M-${tx.id}\n`;
-    if (tx.attachmentUrl) {
-        text += `\nImagem anexa: ${tx.attachmentUrl}`;
+    text += `ID: M-${tx.id}`;
+
+    // Se tem imagem e o navegador suporta share com arquivos
+    if (tx.attachmentUrl && tx.attachmentUrl.startsWith('data:') && navigator.share) {
+        try {
+            const response = await fetch(tx.attachmentUrl);
+            const blob = await response.blob();
+            const ext = blob.type.includes('png') ? 'png' : 'jpg';
+            const file = new File([blob], `comprovante_${tx.id}.${ext}`, { type: blob.type });
+            
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({
+                    text: text,
+                    files: [file]
+                });
+                return;
+            }
+        } catch (err) {
+            console.log('Share com arquivo falhou, usando fallback:', err);
+        }
     }
     
+    // Fallback: compartilhar só o texto pelo link do WhatsApp
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
 }
@@ -328,12 +346,55 @@ window.exportToExcel = function() {
     showToast('Relatório gerado com sucesso!', 'success');
 }
 
-window.sendReportWhatsApp = function() {
+window.sendReportWhatsApp = async function() {
     const companyTxs = state.transactions.filter(t => t.wallet === 'empresa');
-    let text = `Relatório de Prestação de Contas\n\n`;
-    companyTxs.forEach(t => {
-        text += `- ${t.description}: R$ ${Math.abs(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (${t.status})\n`;
+    const totalGasto = companyTxs.filter(t => t.amount < 0).reduce((acc, t) => acc + Math.abs(t.amount), 0);
+    const totalRecebido = companyTxs.filter(t => t.amount > 0).reduce((acc, t) => acc + t.amount, 0);
+    
+    let text = `📋 Relatório de Prestação de Contas\n`;
+    text += `━━━━━━━━━━━━━━━━━━\n`;
+    text += `📅 Data: ${new Date().toLocaleDateString('pt-BR')}\n`;
+    text += `👤 ${state.user?.name || 'Usuário'}\n\n`;
+    
+    text += `💰 Resumo:\n`;
+    text += `  Total Gasto: R$ ${totalGasto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n`;
+    text += `  Total Recebido: R$ ${totalRecebido.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n\n`;
+    
+    text += `📝 Detalhamento:\n`;
+    companyTxs.forEach((t, i) => {
+        const data = new Date(t.date + 'T00:00:00').toLocaleDateString('pt-BR');
+        const statusEmoji = t.status === 'approved' ? '✅' : '⏳';
+        text += `${i + 1}. ${statusEmoji} ${t.description}\n`;
+        text += `   Valor: R$ ${Math.abs(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}\n`;
+        text += `   Data: ${data} | ${t.hasAttachment ? '📎 Com comprovante' : '⚠️ Sem comprovante'}\n\n`;
     });
+
+    // Tentar compartilhar com imagens de comprovantes
+    if (navigator.share) {
+        try {
+            const files = [];
+            for (const t of companyTxs) {
+                if (t.attachmentUrl && t.attachmentUrl.startsWith('data:')) {
+                    const response = await fetch(t.attachmentUrl);
+                    const blob = await response.blob();
+                    const ext = blob.type.includes('png') ? 'png' : 'jpg';
+                    files.push(new File([blob], `comprovante_${t.description.replace(/[^a-zA-Z0-9]/g, '_')}_${t.id}.${ext}`, { type: blob.type }));
+                }
+            }
+            
+            const shareData = { text: text };
+            if (files.length > 0 && navigator.canShare && navigator.canShare({ files })) {
+                shareData.files = files;
+            }
+            
+            await navigator.share(shareData);
+            return;
+        } catch (err) {
+            console.log('Share nativo falhou, usando fallback:', err);
+        }
+    }
+    
+    // Fallback
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
 }
@@ -477,23 +538,94 @@ function setTxType(type) {
 
 function triggerFileUpload() {
     syncInputState();
+    showAttachmentOptions();
+}
+
+function showAttachmentOptions() {
+    // Criar modal de escolha: Câmera ou Galeria
+    const overlay = document.createElement('div');
+    overlay.id = 'attachment-modal';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0,0,0,0.5); z-index: 9999; display: flex;
+        align-items: flex-end; justify-content: center;
+        backdrop-filter: blur(4px); animation: fadeIn 0.2s ease;
+    `;
+    
+    overlay.innerHTML = `
+        <div style="background: white; border-radius: 24px 24px 0 0; width: 100%; max-width: 480px; padding: 24px; padding-bottom: 40px; animation: slideUp 0.3s ease;">
+            <div style="width: 40px; height: 4px; background: #ddd; border-radius: 4px; margin: 0 auto 20px;"></div>
+            <h3 style="font-weight: 700; font-size: 18px; margin-bottom: 20px; text-align: center;">Anexar Comprovante</h3>
+            
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                <button onclick="captureFromCamera()" style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: none; background: rgba(59,130,246,0.08); border-radius: 16px; cursor: pointer; font-family: inherit; font-size: 15px; font-weight: 500; color: #1e293b; transition: all 0.2s;">
+                    <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); display: flex; align-items: center; justify-content: center;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path><circle cx="12" cy="13" r="3"></circle></svg>
+                    </div>
+                    <div style="text-align: left;">
+                        <div style="font-weight: 600;">Tirar Foto</div>
+                        <div style="font-size: 12px; color: #94a3b8;">Usar câmera do dispositivo</div>
+                    </div>
+                </button>
+                
+                <button onclick="pickFromGallery()" style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: none; background: rgba(16,185,129,0.08); border-radius: 16px; cursor: pointer; font-family: inherit; font-size: 15px; font-weight: 500; color: #1e293b; transition: all 0.2s;">
+                    <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                    </div>
+                    <div style="text-align: left;">
+                        <div style="font-weight: 600;">Escolher da Galeria</div>
+                        <div style="font-size: 12px; color: #94a3b8;">Selecionar imagem existente</div>
+                    </div>
+                </button>
+            </div>
+            
+            <button onclick="closeAttachmentModal()" style="width: 100%; margin-top: 16px; padding: 14px; border: none; background: rgba(0,0,0,0.05); border-radius: 12px; cursor: pointer; font-family: inherit; font-size: 14px; font-weight: 600; color: #64748b;">Cancelar</button>
+        </div>
+    `;
+    
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeAttachmentModal();
+    });
+    
+    document.body.appendChild(overlay);
+}
+
+window.closeAttachmentModal = function() {
+    const modal = document.getElementById('attachment-modal');
+    if (modal) modal.remove();
+}
+
+window.captureFromCamera = function() {
+    closeAttachmentModal();
+    // Usar input com capture='environment' para abrir câmera diretamente
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.setAttribute('capture', 'environment'); // Força abertura da câmera
+    input.onchange = (e) => handleFileSelected(e.target.files[0]);
+    input.click();
+}
+
+window.pickFromGallery = function() {
+    closeAttachmentModal();
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*,application/pdf';
-    input.onchange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            state.inputState.attachment = file.name;
-            const reader = new FileReader();
-            reader.onload = async (evt) => {
-                state.inputState.attachmentUrl = evt.target.result;
-                saveDraft();
-                render();
-            };
-            reader.readAsDataURL(file);
-        }
-    };
+    // SEM capture - abre seletor de arquivos/galeria
+    input.onchange = (e) => handleFileSelected(e.target.files[0]);
     input.click();
+}
+
+function handleFileSelected(file) {
+    if (!file) return;
+    state.inputState.attachment = file.name;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+        state.inputState.attachmentUrl = evt.target.result;
+        saveDraft();
+        render();
+    };
+    reader.readAsDataURL(file);
 }
 
 function showTransactionDetails(id) {
@@ -641,47 +773,103 @@ function showToast(message, type = 'info') {
 }
 
 function triggerFileUploadForTx(id) {
+    showAttachmentOptionsForTx(id);
+}
+
+function showAttachmentOptionsForTx(txId) {
+    const overlay = document.createElement('div');
+    overlay.id = 'attachment-modal';
+    overlay.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0,0,0,0.5); z-index: 9999; display: flex;
+        align-items: flex-end; justify-content: center;
+        backdrop-filter: blur(4px); animation: fadeIn 0.2s ease;
+    `;
+    
+    overlay.innerHTML = `
+        <div style="background: white; border-radius: 24px 24px 0 0; width: 100%; max-width: 480px; padding: 24px; padding-bottom: 40px; animation: slideUp 0.3s ease;">
+            <div style="width: 40px; height: 4px; background: #ddd; border-radius: 4px; margin: 0 auto 20px;"></div>
+            <h3 style="font-weight: 700; font-size: 18px; margin-bottom: 20px; text-align: center;">Anexar Comprovante</h3>
+            
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                <button onclick="captureFromCameraForTx(${txId})" style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: none; background: rgba(59,130,246,0.08); border-radius: 16px; cursor: pointer; font-family: inherit; font-size: 15px; font-weight: 500; color: #1e293b;">
+                    <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #3b82f6, #8b5cf6); display: flex; align-items: center; justify-content: center;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path><circle cx="12" cy="13" r="3"></circle></svg>
+                    </div>
+                    <div style="text-align: left;"><div style="font-weight: 600;">Tirar Foto</div><div style="font-size: 12px; color: #94a3b8;">Usar câmera do dispositivo</div></div>
+                </button>
+                
+                <button onclick="pickFromGalleryForTx(${txId})" style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border: none; background: rgba(16,185,129,0.08); border-radius: 16px; cursor: pointer; font-family: inherit; font-size: 15px; font-weight: 500; color: #1e293b;">
+                    <div style="width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #10b981, #059669); display: flex; align-items: center; justify-content: center;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                    </div>
+                    <div style="text-align: left;"><div style="font-weight: 600;">Escolher da Galeria</div><div style="font-size: 12px; color: #94a3b8;">Selecionar imagem existente</div></div>
+                </button>
+            </div>
+            
+            <button onclick="closeAttachmentModal()" style="width: 100%; margin-top: 16px; padding: 14px; border: none; background: rgba(0,0,0,0.05); border-radius: 12px; cursor: pointer; font-family: inherit; font-size: 14px; font-weight: 600; color: #64748b;">Cancelar</button>
+        </div>
+    `;
+    
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeAttachmentModal();
+    });
+    
+    document.body.appendChild(overlay);
+}
+
+window.captureFromCameraForTx = function(txId) {
+    closeAttachmentModal();
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.setAttribute('capture', 'environment');
+    input.onchange = (e) => handleFileSelectedForTx(txId, e.target.files[0]);
+    input.click();
+}
+
+window.pickFromGalleryForTx = function(txId) {
+    closeAttachmentModal();
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = 'image/*,application/pdf';
-    input.onchange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            const txIndex = state.transactions.findIndex(t => t.id === id);
-            if (txIndex > -1) {
-                const reader = new FileReader();
-                reader.onload = async (evt) => {
-                    const originalTx = { ...state.transactions[txIndex] };
-                    state.transactions[txIndex].hasAttachment = true;
-                    state.transactions[txIndex].attachmentUrl = evt.target.result;
-                    
-                    try {
-                        await database.set('transactions', JSON.stringify(state.transactions));
-                    } catch(err) {
-                        alert('A imagem é muito grande para ser salva apenas localmente. Salvando online.');
-                    }
-                    render();
-                    
-                    // Sincroniza a atualização online
-                    if (!GOOGLE_SHEETS_URL.includes('COLE_AQUI')) {
-                        const txSheets = { 
-                            ...state.transactions[txIndex], 
-                            attachmentData: evt.target.result,
-                            attachmentName: file.name
-                        };
-                        showToast('Enviando comprovante para a nuvem...', 'info');
-                        if (navigator.onLine) {
-                            syncToSheets(txSheets);
-                        } else {
-                            addToOfflineQueue(txSheets);
-                        }
-                    }
-                };
-                reader.readAsDataURL(file);
-            }
-        }
-    };
+    input.onchange = (e) => handleFileSelectedForTx(txId, e.target.files[0]);
     input.click();
+}
+
+function handleFileSelectedForTx(id, file) {
+    if (!file) return;
+    const txIndex = state.transactions.findIndex(t => t.id === id);
+    if (txIndex > -1) {
+        const reader = new FileReader();
+        reader.onload = async (evt) => {
+            state.transactions[txIndex].hasAttachment = true;
+            state.transactions[txIndex].attachmentUrl = evt.target.result;
+            
+            try {
+                await database.set('transactions', JSON.stringify(state.transactions));
+            } catch(err) {
+                alert('A imagem é muito grande para ser salva apenas localmente. Salvando online.');
+            }
+            render();
+            
+            // Sincroniza a atualização online
+            if (!GOOGLE_SHEETS_URL.includes('COLE_AQUI')) {
+                const txSheets = { 
+                    ...state.transactions[txIndex], 
+                    attachmentData: evt.target.result,
+                    attachmentName: file.name
+                };
+                showToast('Enviando comprovante para a nuvem...', 'info');
+                if (navigator.onLine) {
+                    syncToSheets(txSheets);
+                } else {
+                    addToOfflineQueue(txSheets);
+                }
+            }
+        };
+        reader.readAsDataURL(file);
+    }
 }
 
 // --- Icons Helper ---

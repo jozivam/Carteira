@@ -22,8 +22,10 @@
   "dependencies": {
     "@capacitor-community/sqlite": "^8.0.1",
     "@capacitor/android": "^8.2.0",
+    "@capacitor/camera": "^8.0.2",
     "@capacitor/cli": "^8.2.0",
-    "@capacitor/core": "^8.2.0"
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/share": "^8.0.1"
   },
   "devDependencies": {
     "serve": "^14.2.6"
