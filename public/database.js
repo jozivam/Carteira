@@ -54,7 +54,11 @@ window.database = {
                     status TEXT,
                     dueDate TEXT,
                     attachment TEXT,
-                    attachmentUrl TEXT
+                    attachmentUrl TEXT,
+                    recurring INTEGER,
+                    recurringType TEXT,
+                    currentInstallment INTEGER,
+                    totalInstallments INTEGER
                 );
             `;
             await this.db.execute(createTables);
@@ -108,9 +112,9 @@ window.database = {
             await this.db.run("DELETE FROM transactions");
             for (const tx of txs) {
                 await this.db.run(`
-                    INSERT INTO transactions (id, date, description, amount, category, wallet, status, dueDate, attachment, attachmentUrl)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                `, [tx.id, tx.date, tx.description, tx.amount, tx.category, tx.wallet, tx.status, tx.dueDate || null, tx.attachment || null, tx.attachmentUrl || null]);
+                    INSERT INTO transactions (id, date, description, amount, category, wallet, status, dueDate, attachment, attachmentUrl, recurring, recurringType, currentInstallment, totalInstallments)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [tx.id, tx.date, tx.description, tx.amount, tx.category, tx.wallet, tx.status, tx.dueDate || null, tx.attachment || null, tx.attachmentUrl || null, tx.recurring ? 1 : 0, tx.recurringType || null, tx.currentInstallment || null, tx.totalInstallments || null]);
             }
             return;
         }

@@ -24,9 +24,13 @@ const state = {
         description: '',
         wallet: 'principal',
         category: 'Alimentação',
-        paid: true,
+        paid: false,
         dueDate: getLocalDate(),
-        attachment: null
+        attachment: null,
+        attachmentUrl: null,
+        recurring: false,
+        recurringType: 'fixed',
+        installments: 2
     },
     wallets: [
         { id: 'principal', name: 'Principal', balance: 0.00, icon: 'wallet', color: '#3b82f6' },
@@ -306,14 +310,75 @@ window.handleSetupPinPad = async function(val) {
 }
 
 window.useBiometrics = async function() {
-    showToast('Escaneando biometria...', 'info');
-    // Simulação de delay para biometria
-    setTimeout(() => {
-        state.security.isLocked = false;
-        state.loginPinProgress = '';
-        showToast('Acesso autorizado', 'success');
-        navigate('dashboard');
-    }, 1000);
+    // Tentar biometria nativa via WebAuthn
+    if (window.PublicKeyCredential && navigator.credentials) {
+        try {
+            showToast('Escaneando biometria...', 'info');
+            
+            // Verifica se já tem credencial registrada
+            const storedCredId = await database.get('biometric_cred_id');
+            
+            if (!storedCredId) {
+                // Primeiro uso: registrar credencial biométrica
+                const challenge = new Uint8Array(32);
+                crypto.getRandomValues(challenge);
+                const createOptions = {
+                    publicKey: {
+                        challenge: challenge,
+                        rp: { name: 'Carteira App', id: location.hostname || 'localhost' },
+                        user: {
+                            id: new TextEncoder().encode(state.user?.name || 'user'),
+                            name: state.user?.name || 'user',
+                            displayName: state.user?.name || 'Usuário'
+                        },
+                        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+                        authenticatorSelection: {
+                            authenticatorAttachment: 'platform',
+                            userVerification: 'required'
+                        },
+                        timeout: 60000
+                    }
+                };
+                const credential = await navigator.credentials.create(createOptions);
+                const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+                await database.set('biometric_cred_id', credIdBase64);
+                
+                state.security.isLocked = false;
+                state.loginPinProgress = '';
+                showToast('Biometria registrada e acesso autorizado!', 'success');
+                navigate('dashboard');
+                return;
+            }
+            
+            // Autenticação com credencial existente
+            const credIdRaw = Uint8Array.from(atob(storedCredId), c => c.charCodeAt(0));
+            const challenge = new Uint8Array(32);
+            crypto.getRandomValues(challenge);
+            const getOptions = {
+                publicKey: {
+                    challenge: challenge,
+                    allowCredentials: [{ id: credIdRaw, type: 'public-key', transports: ['internal'] }],
+                    userVerification: 'required',
+                    timeout: 60000
+                }
+            };
+            await navigator.credentials.get(getOptions);
+            
+            state.security.isLocked = false;
+            state.loginPinProgress = '';
+            showToast('Acesso autorizado', 'success');
+            navigate('dashboard');
+        } catch (err) {
+            console.error('Biometria falhou:', err);
+            if (err.name === 'NotAllowedError') {
+                showToast('Biometria cancelada pelo usuário', 'warning');
+            } else {
+                showToast('Biometria não disponível. Use o PIN.', 'error');
+            }
+        }
+    } else {
+        showToast('Biometria não suportada neste dispositivo. Use o PIN.', 'error');
+    }
 }
 
 window.exportToExcel = function() {
@@ -421,7 +486,11 @@ async function navigate(screen) {
             category: 'Alimentação',
             paid: true,
             dueDate: getLocalDate(),
-            attachment: null
+            attachment: null,
+            attachmentUrl: null,
+            recurring: false,
+            recurringType: 'fixed',
+            installments: 2
         };
     } else {
         await database.remove('tx_draft');
@@ -429,6 +498,43 @@ async function navigate(screen) {
     setState({ currentScreen: screen });
     saveDraft();
 }
+
+window.navigate = navigate;
+
+window.setTxType = function(type) {
+    syncInputState();
+    state.inputState.type = type;
+    if (type === 'income') {
+        state.inputState.category = 'Salário';
+    } else {
+        state.inputState.category = 'Alimentação';
+    }
+    render();
+};
+
+window.togglePayment = function() {
+    syncInputState();
+    state.inputState.paid = !state.inputState.paid;
+    render();
+};
+
+window.toggleRecurring = function() {
+    syncInputState();
+    state.inputState.recurring = !state.inputState.recurring;
+    render();
+};
+
+window.setCategory = function(cat) {
+    state.inputState.category = cat;
+    render();
+    saveDraft();
+};
+
+window.setWallet = function(wallet) {
+    state.inputState.wallet = wallet;
+    render();
+    saveDraft();
+};
 
 function handleNativeInput(event) {
     let val = parseFloat(event.target.value) || 0;
@@ -441,11 +547,13 @@ function syncInputState() {
     const cat = document.getElementById('cat-input');
     const wallet = document.getElementById('wallet-input');
     const date = document.getElementById('date-input');
+    const inst = document.getElementById('installments-input');
     
     if (desc) state.inputState.description = desc.value;
     if (cat) state.inputState.category = cat.value;
     if (wallet) state.inputState.wallet = wallet.value;
     if (date) state.inputState.dueDate = date.value;
+    if (inst) state.inputState.installments = parseInt(inst.value) || 2;
     
     saveDraft();
 }
@@ -465,9 +573,20 @@ async function saveTransaction(event) {
     const wallet = document.getElementById('wallet-input').value;
     const isPaid = state.inputState.paid;
     const dueDate = document.getElementById('date-input')?.value || state.inputState.dueDate;
+    const isRecurring = state.inputState.recurring;
+    const recurringType = state.inputState.recurringType;
+    const installmentsCount = parseInt(state.inputState.installments) || 2;
 
     const isExpense = state.inputState.type === 'expense';
-    const finalAmount = isExpense ? -val : val;
+    
+    // Calculates value per installment if it is 'installments'
+    let finalAmount = val;
+    if (isRecurring && recurringType === 'installments') {
+        finalAmount = parseFloat((val / installmentsCount).toFixed(2));
+    }
+    finalAmount = isExpense ? -finalAmount : finalAmount;
+
+    const recurringGroupId = isRecurring ? Date.now() : null;
 
     const newTx = {
         id: Date.now(),
@@ -480,18 +599,56 @@ async function saveTransaction(event) {
         wallet: wallet,
         status: isPaid ? 'approved' : 'pending',
         hasAttachment: !!state.inputState.attachment,
-        attachmentUrl: state.inputState.attachmentUrl || null
+        attachmentUrl: state.inputState.attachmentUrl || null,
+        recurring: isRecurring,
+        recurringType: isRecurring ? recurringType : null,
+        currentInstallment: isRecurring && recurringType === 'installments' ? 1 : null,
+        totalInstallments: isRecurring && recurringType === 'installments' ? installmentsCount : null,
+        recurringGroupId: recurringGroupId
     };
+
+    let allNewTxs = [newTx];
+
+    // Se for recorrente, gera cópias
+    if (isRecurring) {
+        let iterations = recurringType === 'fixed' ? 11 : installmentsCount - 1;
+        const baseDate = new Date(dueDate + 'T00:00:00');
+        for (let i = 1; i <= iterations; i++) {
+            const futureDate = new Date(baseDate);
+            futureDate.setMonth(futureDate.getMonth() + i);
+            if (futureDate.getDate() !== baseDate.getDate()) futureDate.setDate(0); // overflow fix
+            const futureDateStr = futureDate.toISOString().split('T')[0];
+            allNewTxs.push({
+                ...newTx,
+                id: Date.now() + i,
+                date: getLocalDate(),
+                time: getLocalTime(),
+                dueDate: futureDateStr,
+                status: 'pending',
+                hasAttachment: false,
+                attachmentUrl: null,
+                currentInstallment: recurringType === 'installments' ? i + 1 : null
+            });
+        }
+        
+        // Adjust cents for the last installment
+        if (recurringType === 'installments' && iterations > 0) {
+            const sumAntes = finalAmount * installmentsCount;
+            const diferenca = parseFloat(((isExpense ? -val : val) - sumAntes).toFixed(2));
+            if (Math.abs(diferenca) >= 0.01) {
+                allNewTxs[allNewTxs.length - 1].amount = parseFloat((allNewTxs[allNewTxs.length - 1].amount + diferenca).toFixed(2));
+            }
+        }
+    }
 
     let updatedWallets = state.wallets;
     if (isPaid) {
-        // Update wallet balance only if paid
         updatedWallets = state.wallets.map(w => 
             w.id === wallet ? { ...w, balance: w.balance + finalAmount } : w
         );
     }
 
-    const updatedTransactions = [newTx, ...state.transactions];
+    const updatedTransactions = [...allNewTxs, ...state.transactions];
     await database.set('transactions', JSON.stringify(updatedTransactions));
     await database.remove('tx_draft');
 
@@ -512,11 +669,39 @@ async function saveTransaction(event) {
     
     await database.set('wallets', JSON.stringify(updatedWallets));
     
+    if (isRecurring) {
+        showToast(`Agendamento recorrente criado! ${allNewTxs.length} parcelas geradas.`, 'success');
+    }
+    
     setState({ 
         wallets: updatedWallets, 
         transactions: updatedTransactions, 
         currentScreen: 'dashboard' 
     });
+}
+
+window.setRecurringType = function(type) {
+    syncInputState();
+    if (type === 'none') {
+        state.inputState.recurring = false;
+    } else {
+        state.inputState.recurring = true;
+        state.inputState.recurringType = type;
+    }
+    render();
+}
+
+window.updateInstallments = function(val) {
+    state.inputState.installments = val;
+}
+
+window.deleteRecurringGroup = async function(groupId) {
+    if (!confirm('Deseja excluir TODOS os pagamentos futuros desta recorrência?')) return;
+    const toRemove = state.transactions.filter(t => t.recurringGroupId === groupId && t.status === 'pending');
+    state.transactions = state.transactions.filter(t => !(t.recurringGroupId === groupId && t.status === 'pending'));
+    await database.set('transactions', JSON.stringify(state.transactions));
+    showToast(`${toRemove.length} parcelas futuras removidas.`, 'success');
+    navigate('dashboard');
 }
 
 function togglePaid() {
@@ -994,8 +1179,9 @@ const Screens = {
                     <p class="caption">Agendados</p>
                 </div>
                 <div style="overflow-x: auto; display: flex; gap: 12px; padding: 4px; scrollbar-width: none;">
-                    ${state.transactions.filter(t => t.status === 'pending').map(t => `
-                        <div class="glass-card" style="min-width: 200px; border-left: 4px solid var(--warning);">
+                    ${state.transactions.filter(t => t.status === 'pending').sort((a,b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 10).map(t => `
+                        <div class="glass-card" onclick="showTransactionDetails(${t.id})" style="min-width: 200px; border-left: 4px solid var(--warning); cursor: pointer; position: relative;">
+                            ${t.recurring && t.recurringType === 'installments' ? `<span style="position: absolute; top: 8px; right: 8px; font-size: 10px; background: var(--accent-blue); color: white; padding: 2px 8px; border-radius: 10px;">Parcela ${t.currentInstallment}/${t.totalInstallments}</span>` : t.recurring ? '<span style="position: absolute; top: 8px; right: 8px; font-size: 10px; background: var(--success); color: white; padding: 2px 8px; border-radius: 10px;">🔄 Mensal</span>' : ''}
                             <p style="font-weight: 500; font-size: 14px;">${t.description}</p>
                             <p class="caption" style="font-size: 11px; margin: 4px 0;">Vence em: ${new Date(t.dueDate + 'T00:00:00').toLocaleDateString('pt-BR')}</p>
                             <h3 class="amount" style="font-size: 18px; color: var(--warning);">R$ ${Math.abs(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</h3>
@@ -1016,7 +1202,11 @@ const Screens = {
                                 ${icon(t.amount < 0 ? 'arrow-down-right' : 'arrow-up-right', t.amount < 0 ? 'var(--error)' : 'var(--success)', 18)}
                             </div>
                             <div style="flex: 1;">
-                                <p style="font-weight: 500; font-size: 15px;">${t.description}</p>
+                                <p style="font-weight: 500; font-size: 15px;">
+                                    ${t.description}
+                                    ${t.recurring && t.recurringType === 'installments' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(${t.currentInstallment}/${t.totalInstallments})</span>` : ''}
+                                    ${t.recurring && t.recurringType === 'fixed' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(Fixo)</span>` : ''}
+                                </p>
                                 <p class="caption" style="font-size: 12px;">${t.category} ${t.status === 'pending' ? '• Pendente' : ''}</p>
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
@@ -1104,6 +1294,28 @@ const Screens = {
                         </div>
                     </div>
 
+                    <div class="glass-card" style="padding: 16px;">
+                        <p class="caption" style="font-size: 12px; margin-bottom: 12px; color: var(--text-primary); font-weight: 500;">Frequência / Parcelamento</p>
+                        <div style="display: flex; gap: 6px;">
+                            <button type="button" onclick="setRecurringType('none')" class="glass" style="flex: 1; padding: 10px 4px; border-radius: 8px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; transition: 0.2s; ${!state.inputState.recurring ? 'background: var(--accent-blue); color: white;' : ''}">
+                                Único
+                            </button>
+                            <button type="button" onclick="setRecurringType('fixed')" class="glass" style="flex: 1; padding: 10px 4px; border-radius: 8px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; transition: 0.2s; ${state.inputState.recurring && state.inputState.recurringType === 'fixed' ? 'background: var(--accent-blue); color: white;' : ''}">
+                                Mensal
+                            </button>
+                            <button type="button" onclick="setRecurringType('installments')" class="glass" style="flex: 1; padding: 10px 4px; border-radius: 8px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; transition: 0.2s; ${state.inputState.recurring && state.inputState.recurringType === 'installments' ? 'background: var(--accent-blue); color: white;' : ''}">
+                                Parcelado
+                            </button>
+                        </div>
+
+                        ${state.inputState.recurring && state.inputState.recurringType === 'installments' ? `
+                        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(0,0,0,0.05);">
+                            <p class="caption" style="font-size: 12px; margin-bottom: 8px;">Número de Parcelas (O valor no topo será dividido)</p>
+                            <input type="number" id="installments-input" value="${state.inputState.installments || 2}" min="2" max="120" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.1); background: rgba(0,0,0,0.02); font-size: 16px;" onchange="updateInstallments(this.value)">
+                        </div>
+                        ` : ''}
+                    </div>
+
                     <div class="glass-card" onclick="triggerFileUpload()" style="padding: 12px 20px; display: flex; align-items: center; gap: 12px; cursor: pointer;">
                         <div class="glass" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.03);">
                             ${icon('camera', state.inputState.attachment ? 'var(--accent-blue)' : 'var(--text-primary)', 16)}
@@ -1154,7 +1366,11 @@ const Screens = {
                                             ${icon(t.amount < 0 ? 'arrow-down-right' : 'arrow-up-right', t.amount < 0 ? 'var(--error)' : 'var(--success)', 20)}
                                         </div>
                                         <div style="flex: 1;">
-                                            <p style="font-weight: 500;">${t.description}</p>
+                                            <p style="font-weight: 500;">
+                                                ${t.description}
+                                                ${t.recurring && t.recurringType === 'installments' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(${t.currentInstallment}/${t.totalInstallments})</span>` : ''}
+                                                ${t.recurring && t.recurringType === 'fixed' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(Fixo)</span>` : ''}
+                                            </p>
                                             <p class="caption">
                                                 ${t.category} • ${state.wallets.find(w => w.id === t.wallet)?.name}
                                                 ${t.status === 'pending' ? ` • ${icon('clock', 'var(--warning)', 12)} Pendente` : ''}
@@ -1225,7 +1441,11 @@ const Screens = {
                         <div class="glass-card" onclick="showTransactionDetails(${t.id})" style="padding: 16px; cursor: pointer;">
                             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
                                 <div>
-                                    <p style="font-weight: 600; font-size: 14px;">${t.description}</p>
+                                    <p style="font-weight: 600; font-size: 14px;">
+                                        ${t.description}
+                                        ${t.recurring && t.recurringType === 'installments' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(${t.currentInstallment}/${t.totalInstallments})</span>` : ''}
+                                        ${t.recurring && t.recurringType === 'fixed' ? `<span style="font-size: 11px; opacity: 0.6; margin-left: 4px;">(Fixo)</span>` : ''}
+                                    </p>
                                     <p class="caption" style="font-size: 11px;">${new Date(t.date + 'T00:00:00').toLocaleDateString('pt-BR')}</p>
                                 </div>
                                 <p class="amount" style="font-size: 14px;">R$ ${Math.abs(t.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
@@ -1391,14 +1611,33 @@ const Screens = {
                         <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 4px;">Carteira / Origem</p>
                         <p style="font-weight: 600; font-size: 15px;">${state.wallets.find(w => w.id === tx.wallet)?.name || 'N/A'}</p>
                     </div>
+
+                    ${tx.recurring ? `
+                    <hr style="border: none; border-top: 1px solid rgba(0,0,0,0.05); margin: 0;">
+                    <div>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 4px;">Tipo</p>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 12px; background: var(--accent-blue); color: white; padding: 4px 12px; border-radius: 12px; font-weight: 600;">
+                                ${tx.recurringType === 'installments' ? `Parcela ${tx.currentInstallment}/${tx.totalInstallments}` : '🔄 Recorrente Mensal'}
+                            </span>
+                            ${tx.dueDate ? `<span style="font-size: 12px; color: var(--text-secondary);">Vence: ${new Date(tx.dueDate + 'T00:00:00').toLocaleDateString('pt-BR')}</span>` : ''}
+                        </div>
+                    </div>
+                    ` : ''}
                 </div>
 
                 ${tx.status === 'pending' ? `
-                    <div style="margin-top: 32px;">
+                    <div style="margin-top: 32px; display: flex; flex-direction: column; gap: 12px;">
                         <button onclick="payTransaction(${tx.id})" class="btn btn-primary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; background: var(--success); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);">
                             ${icon('check-circle', 'white', 18)}
                             Marcar como Pago
                         </button>
+                        ${tx.recurring && tx.recurringGroupId ? `
+                        <button onclick="deleteRecurringGroup(${tx.recurringGroupId})" class="btn" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid rgba(239, 68, 68, 0.3);">
+                            ${icon('trash-2', 'var(--error)', 18)}
+                            Excluir Toda Recorrência
+                        </button>
+                        ` : ''}
                     </div>
                 ` : ''}
                 

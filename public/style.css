@@ -266,3 +266,101 @@ input:checked + .slider:before {
 .slider.round:before {
     border-radius: 50%;
 }
+
+/* Transaction Form Specifics */
+.category-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+}
+
+.category-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.category-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: white;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+    transition: all 0.3s ease;
+}
+
+.category-item.active .category-icon {
+    transform: scale(1.15);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.1);
+}
+
+.category-item span {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.category-item.active span {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+
+.wallet-select-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border-radius: 18px;
+    background: white;
+    border: 1px solid var(--glass-border);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.wallet-select-item.active {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.05);
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.1);
+}
+
+.btn-toggle {
+    display: flex;
+    background: rgba(0,0,0,0.05);
+    padding: 4px;
+    border-radius: 16px;
+}
+
+.btn-toggle-item {
+    flex: 1;
+    border: none;
+    background: transparent;
+    padding: 10px;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-toggle-item.active {
+    background: white;
+    color: var(--text-primary);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+}
