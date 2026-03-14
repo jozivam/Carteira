@@ -21,7 +21,13 @@ const state = {
     ],
     user: { name: 'jozivam', email: 'jozivam@email.com' },
     transactions: [],
-    hideBalance: false
+    hideBalance: false,
+    security: {
+        enabled: false,
+        pin: '',
+        isLocked: true
+    },
+    loginPinProgress: ''
 };
 
 async function initState() {
@@ -48,7 +54,20 @@ async function initState() {
 
         const storedHide = await database.get('hideBalance');
         if (storedHide !== null) state.hideBalance = storedHide === 'true';
-    } catch(e) {}
+
+        const storedSecurity = await database.get('security');
+        if (storedSecurity) {
+            state.security = JSON.parse(storedSecurity);
+            state.security.isLocked = true; // Sempre bloqueia ao iniciar
+        }
+        
+        // Se a segurança estiver ativada, a tela inicial deve ser o login
+        if (state.security.enabled) {
+            state.currentScreen = 'login';
+        }
+    } catch (e) {
+        console.error('Falha ao inicializar estado:', e);
+    }
 }
 
 async function saveDraft() {
@@ -179,9 +198,112 @@ window.clearAllData = async function() {
         await database.set('wallets', JSON.stringify(resetWallets));
         await database.remove('tx_draft');
         await database.remove('hideBalance');
+        await database.remove('security');
         
         location.reload();
     }
+}
+
+// Security Logic
+window.toggleSecurity = async function(enabled) {
+    if (enabled && !state.security.pin) {
+        navigate('setupSecurity');
+        return;
+    }
+    state.security.enabled = enabled;
+    await database.set('security', JSON.stringify(state.security));
+    render();
+}
+
+window.savePin = async function() {
+    const pin = state.setupPinProgress;
+    if (pin.length !== 4) {
+        showToast('O PIN deve ter 4 dígitos.', 'warning');
+        return;
+    }
+    state.security.pin = pin;
+    state.security.enabled = true;
+    state.security.isLocked = false;
+    state.setupPinProgress = '';
+    await database.set('security', JSON.stringify(state.security));
+    showToast('Segurança configurada!', 'success');
+    navigate('profile');
+}
+
+window.inputPin = async function(val) {
+    if (val === 'back') {
+        state.loginPinProgress = state.loginPinProgress.slice(0, -1);
+    } else {
+        if (state.loginPinProgress.length < 4) {
+            state.loginPinProgress += val;
+        }
+    }
+
+    render();
+
+    if (state.loginPinProgress.length === 4) {
+        if (state.loginPinProgress === state.security.pin) {
+            state.security.isLocked = false;
+            state.loginPinProgress = '';
+            navigate('dashboard');
+        } else {
+            showToast('PIN incorreto', 'error');
+            state.loginPinProgress = '';
+            setTimeout(render, 500);
+        }
+    }
+}
+
+window.handleSetupPinPad = async function(val) {
+    if (val === 'back') {
+        state.setupPinProgress = state.setupPinProgress.slice(0, -1);
+    } else {
+        if (state.setupPinProgress.length < 4) {
+            state.setupPinProgress += val;
+        }
+    }
+    render();
+}
+
+window.useBiometrics = async function() {
+    showToast('Escaneando biometria...', 'info');
+    // Simulação de delay para biometria
+    setTimeout(() => {
+        state.security.isLocked = false;
+        state.loginPinProgress = '';
+        showToast('Acesso autorizado', 'success');
+        navigate('dashboard');
+    }, 1000);
+}
+
+window.exportToExcel = function() {
+    const transactions = state.transactions;
+    if (transactions.length === 0) {
+        showToast('Não há transações para exportar.', 'warning');
+        return;
+    }
+
+    // Usando ponto e vírgula como separador para compatibilidade direta com Excel em PT-BR
+    let csv = 'ID;Data;Descricao;Valor;Carteira;Categoria;Status\n';
+    
+    transactions.forEach(t => {
+        const date = new Date(t.date + 'T00:00:00').toLocaleDateString('pt-BR');
+        const amount = t.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+        const walletName = state.wallets.find(w => w.id === t.wallet)?.name || t.wallet;
+        
+        csv += `${t.id};${date};${t.description};${amount};${walletName};${t.category};${t.status}\n`;
+    });
+
+    const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `relatorio_carteira_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Relatório gerado com sucesso!', 'success');
 }
 
 window.sendReportWhatsApp = function() {
@@ -200,6 +322,12 @@ function setState(newState) {
 }
 
 async function navigate(screen) {
+    // Se estiver bloqueado, não permite ir para lugar nenhum além do login
+    // Exceto se for para configurar o PIN (primeira vez)
+    if (state.security.enabled && state.security.isLocked && screen !== 'login' && screen !== 'setupSecurity') {
+        return;
+    }
+
     state.prevScreen = state.currentScreen;
     if (screen === 'addTransaction') {
         state.inputState = { 
@@ -871,6 +999,79 @@ const Screens = {
         `;
     },
 
+    setupSecurity: () => {
+        const dotStyle = (filled) => `width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent-blue); background: ${filled ? 'var(--accent-blue)' : 'transparent'}; transition: all 0.2s;`;
+        
+        return `
+        <div class="content-area animate-in" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; padding-bottom: 24px;">
+            <h1 class="h1" style="margin-bottom: 8px;">Definir PIN</h1>
+            <p class="caption" style="margin-bottom: 40px;">Crie um código de 4 dígitos para proteger seu app</p>
+            
+            <div style="display: flex; gap: 20px; margin-bottom: 60px;">
+                <div style="${dotStyle(state.setupPinProgress.length >= 1)}"></div>
+                <div style="${dotStyle(state.setupPinProgress.length >= 2)}"></div>
+                <div style="${dotStyle(state.setupPinProgress.length >= 3)}"></div>
+                <div style="${dotStyle(state.setupPinProgress.length >= 4)}"></div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; width: 100%; max-width: 280px;">
+                ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => `
+                    <div class="glass numpad-btn" onclick="handleSetupPinPad('${num}')" style="width: 70px; height: 70px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 600; cursor: pointer;">${num}</div>
+                `).join('')}
+                <div style="width: 70px; height: 70px;"></div>
+                <div class="glass numpad-btn" onclick="handleSetupPinPad('0')" style="width: 70px; height: 70px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 600; cursor: pointer;">0</div>
+                <div class="glass numpad-btn" onclick="handleSetupPinPad('back')" style="width: 70px; height: 70px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+                    ${icon('delete', 'var(--text-primary)', 24)}
+                </div>
+            </div>
+
+            <button class="btn btn-primary" style="margin-top: 48px; width: 100%; max-width: 280px; opacity: ${state.setupPinProgress.length === 4 ? 1 : 0.5}" ${state.setupPinProgress.length === 4 ? 'onclick="savePin()"' : 'disabled'}>
+                Confirmar PIN
+            </button>
+            
+            <p class="caption" onclick="navigate('profile')" style="margin-top: 24px; cursor: pointer;">Pular por enquanto</p>
+        </div>
+        <input type="hidden" id="setup-pin" value="${state.setupPinProgress}">
+        `;
+    },
+
+    login: () => {
+        const dotStyle = (filled) => `width: 14px; height: 14px; border-radius: 50%; border: 2.5px solid var(--accent-blue); background: ${filled ? 'var(--accent-blue)' : 'transparent'}; transition: all 0.2s ease;`;
+        
+        return `
+        <div class="content-area animate-in" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; padding-top: 40px;">
+            <div class="glass" style="width: 80px; height: 80px; border-radius: 24px; display: flex; align-items: center; justify-content: center; background: white; margin-bottom: 24px; box-shadow: var(--shadow-soft);">
+                ${icon('shield-check', 'var(--accent-blue)', 40)}
+            </div>
+            
+            <h1 class="h1" style="margin-bottom: 8px;">Acesso Restrito</h1>
+            <p class="caption" style="margin-bottom: 48px;">Digite seu PIN para continuar</p>
+            
+            <div style="display: flex; gap: 24px; margin-bottom: 64px;">
+                <div style="${dotStyle(state.loginPinProgress.length >= 1)}"></div>
+                <div style="${dotStyle(state.loginPinProgress.length >= 2)}"></div>
+                <div style="${dotStyle(state.loginPinProgress.length >= 3)}"></div>
+                <div style="${dotStyle(state.loginPinProgress.length >= 4)}"></div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; width: 100%; max-width: 300px;">
+                ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => `
+                    <div class="glass numpad-btn" onclick="inputPin('${num}')" style="width: 75px; height: 75px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 600; cursor: pointer;">${num}</div>
+                `).join('')}
+                <div class="glass numpad-btn" onclick="useBiometrics()" style="width: 75px; height: 75px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+                    ${icon('fingerprint', 'var(--accent-blue)', 28)}
+                </div>
+                <div class="glass numpad-btn" onclick="inputPin('0')" style="width: 75px; height: 75px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 600; cursor: pointer;">0</div>
+                <div class="glass numpad-btn" onclick="inputPin('back')" style="width: 75px; height: 75px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;">
+                    ${icon('delete', 'var(--text-primary)', 24)}
+                </div>
+            </div>
+
+            <p class="caption" onclick="navigate('dashboard')" style="margin-top: 40px; color: var(--accent-blue); font-weight: 600; cursor: pointer;">Esqueci meu PIN</p>
+        </div>
+        `;
+    },
+
     transactionDetails: () => {
         const tx = state.transactions.find(t => t.id === state.selectedTxId);
         if (!tx) return `<div class="content-area"><p>Transação não encontrada.</p><button class="btn btn-primary" onclick="navigate('dashboard')">Voltar</button></div>`;
@@ -1026,22 +1227,25 @@ const Screens = {
 
             <h2 class="h2" style="margin-bottom: 16px;">Distribuição</h2>
             <div class="glass-card" style="display: flex; flex-direction: column; gap: 20px;">
-                ${categories.length > 0 ? categories.map((cat, idx) => `
-                <div style="display: flex; align-items: center; gap: 16px;">
-                    <div class="glass" style="width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: rgba(59, 130, 246, 0.1);">
-                        ${icon(categoryIcons[cat.name] || 'grid', idx % 2 === 0 ? 'var(--accent-blue)' : 'var(--accent-purple)', 20)}
-                    </div>
-                    <div style="flex: 1;">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
-                            <span style="font-weight: 500; font-size: 14px;">${cat.name}</span>
-                            <span class="caption" style="font-size: 12px;">${cat.percent}%</span>
+                ${(() => {
+                    if (categories.length === 0) return '<p class="caption" style="text-align: center; padding: 20px;">Nenhuma despesa registrada para análise.</p>';
+                    return categories.map((cat, idx) => `
+                    <div style="display: flex; align-items: center; gap: 16px;">
+                        <div class="glass" style="width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: rgba(59, 130, 246, 0.1);">
+                            ${icon(categoryIcons[cat.name] || 'grid', idx % 2 === 0 ? 'var(--accent-blue)' : 'var(--accent-purple)', 20)}
                         </div>
-                        <div style="height: 6px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden;">
-                            <div style="width: ${cat.percent}%; height: 100%; background: ${idx % 2 === 0 ? 'var(--accent-blue)' : 'var(--accent-purple)' };"></div>
+                        <div style="flex: 1;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                                <span style="font-weight: 500; font-size: 14px;">${cat.name}</span>
+                                <span class="caption" style="font-size: 12px;">${cat.percent}%</span>
+                            </div>
+                            <div style="height: 6px; background: rgba(0,0,0,0.05); border-radius: 3px; overflow: hidden;">
+                                <div style="width: ${cat.percent}%; height: 100%; background: ${idx % 2 === 0 ? 'var(--accent-blue)' : 'var(--accent-purple)'}"></div>
+                            </div>
                         </div>
                     </div>
-                </div>
-                `).join('') : '<p class="caption" style="text-align: center; padding: 20px;">Nenhuma despesa registrada para análise.</p>'}
+                `).join('');
+                })()}
             </div>
         </div>
         `;
@@ -1070,7 +1274,31 @@ const Screens = {
                 
                 <button class="btn btn-primary" style="width: 100%; margin-top: 24px;" onclick="saveProfile()">Salvar Dados</button>
             </div>
+
+            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
+                <h2 class="h2">Exportar Relatório</h2>
+                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Gere um arquivo CSV compatível com Excel com todos os seus lançamentos.</p>
+                <button class="btn btn-primary" style="width: 100%; background: var(--success); display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="exportToExcel()">
+                    ${icon('file-spreadsheet', '#fff', 20)}
+                    Exportar para Excel (CSV)
+                </button>
+            </div>
             
+            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
+                <h2 class="h2">Segurança</h2>
+                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Proteja seu acesso com um código PIN ou biometria.</p>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <span style="font-weight: 500;">Ativar bloqueio</span>
+                    <label class="switch">
+                        <input type="checkbox" ${state.security.enabled ? 'checked' : ''} onchange="toggleSecurity(this.checked)">
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                ${state.security.enabled ? `
+                <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue);" onclick="navigate('setupSecurity')">Alterar PIN</button>
+                ` : ''}
+            </div>
+
             <div class="glass-card" style="padding: 24px; margin-top: 24px;">
                 <h2 class="h2">Limpar Dados</h2>
                 <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Apague todos os dados locais armazenados no seu dispositivo.</p>
@@ -1114,7 +1342,7 @@ function render() {
     const app = document.getElementById('app');
     const screenHtml = Screens[state.currentScreen]();
     
-    const showNav = ['dashboard', 'extract', 'report', 'accountability'].includes(state.currentScreen);
+    const showNav = ['dashboard', 'extract', 'report', 'accountability', 'profile'].includes(state.currentScreen);
     const navHtml = showNav ? renderNavBar() : '';
     
     const blobsHtml = `
