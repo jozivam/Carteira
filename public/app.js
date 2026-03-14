@@ -1,6 +1,20 @@
 // Antigravity Digital Wallet - App Logic
 const GOOGLE_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbzoYAHXynW3Mrvcg5cHbLj6_SiaQcGr-6Uw1Lsluh51iEnGFOZpduVP9XW2fYMJQ4pt/exec';
 
+// Helper: retorna data local no formato YYYY-MM-DD (sem problemas de fuso horário)
+function getLocalDate() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function getLocalTime() {
+    const now = new Date();
+    return String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+}
+
 const state = {
     currentScreen: 'dashboard',
     prevScreen: 'dashboard',
@@ -11,7 +25,7 @@ const state = {
         wallet: 'principal',
         category: 'Alimentação',
         paid: true,
-        dueDate: new Date().toISOString().split('T')[0],
+        dueDate: getLocalDate(),
         attachment: null
     },
     wallets: [
@@ -39,7 +53,6 @@ async function initState() {
         if (!initialized) {
             await database.set('transactions', JSON.stringify([]));
             await database.set('wallets', JSON.stringify(state.wallets));
-            await database.set('user', JSON.stringify(state.user));
             await database.set('app_initialized_v2', 'true');
         }
 
@@ -61,6 +74,13 @@ async function initState() {
             state.security.isLocked = true; // Sempre bloqueia ao iniciar
         }
         
+        // Verifica se é o primeiro acesso (usuário ainda não se registrou)
+        const registered = await database.get('user_registered');
+        if (!registered) {
+            state.currentScreen = 'register';
+            return;
+        }
+
         // Se a segurança estiver ativada, a tela inicial deve ser o login
         if (state.security.enabled) {
             state.currentScreen = 'login';
@@ -199,6 +219,8 @@ window.clearAllData = async function() {
         await database.remove('tx_draft');
         await database.remove('hideBalance');
         await database.remove('security');
+        await database.remove('user_registered');
+        await database.remove('app_initialized_v2');
         
         location.reload();
     }
@@ -324,7 +346,7 @@ function setState(newState) {
 async function navigate(screen) {
     // Se estiver bloqueado, não permite ir para lugar nenhum além do login
     // Exceto se for para configurar o PIN (primeira vez)
-    if (state.security.enabled && state.security.isLocked && screen !== 'login' && screen !== 'setupSecurity') {
+    if (state.security.enabled && state.security.isLocked && screen !== 'login' && screen !== 'setupSecurity' && screen !== 'register') {
         return;
     }
 
@@ -337,7 +359,7 @@ async function navigate(screen) {
             wallet: 'principal', 
             category: 'Alimentação',
             paid: true,
-            dueDate: new Date().toISOString().split('T')[0],
+            dueDate: getLocalDate(),
             attachment: null
         };
     } else {
@@ -388,7 +410,8 @@ async function saveTransaction(event) {
 
     const newTx = {
         id: Date.now(),
-        date: new Date().toISOString().split('T')[0],
+        date: getLocalDate(),
+        time: getLocalTime(),
         dueDate: dueDate,
         description: description || 'Sem descrição',
         amount: finalAmount,
@@ -490,7 +513,7 @@ function payTransaction(id) {
 
     // Update status and date
     tx.status = 'approved';
-    tx.date = new Date().toISOString().split('T')[0];
+    tx.date = getLocalDate();
 
     // Update wallet balance
     const walletIndex = state.wallets.findIndex(w => w.id === tx.wallet);
@@ -669,6 +692,45 @@ function icon(name, color = 'currentColor', size = 24) {
 // --- Screens ---
 
 const Screens = {
+    register: () => {
+        return `
+        <div class="content-area animate-in" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px;">
+            <div class="glass" style="width: 80px; height: 80px; border-radius: 24px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); margin-bottom: 24px; box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);">
+                ${icon('wallet', 'white', 40)}
+            </div>
+            
+            <h1 class="h1" style="margin-bottom: 8px; text-align: center;">Bem-vindo ao Carteira</h1>
+            <p class="caption" style="margin-bottom: 40px; text-align: center;">Configure seus dados para começar a usar o app</p>
+            
+            <div style="width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 16px;">
+                <div class="glass-card" style="padding: 16px 20px;">
+                    <p class="caption" style="font-size: 12px; margin-bottom: 6px;">${icon('user', 'var(--text-secondary)', 14)} Seu Nome</p>
+                    <input type="text" id="register-name" placeholder="Ex: João Silva" required style="background: none; border: none; color: var(--text-primary); font-family: inherit; font-size: 16px; width: 100%; outline: none; font-weight: 500;">
+                </div>
+                
+                <div class="glass-card" style="padding: 16px 20px;">
+                    <p class="caption" style="font-size: 12px; margin-bottom: 6px;">${icon('mail', 'var(--text-secondary)', 14)} Seu Email</p>
+                    <input type="email" id="register-email" placeholder="Ex: joao@email.com" required style="background: none; border: none; color: var(--text-primary); font-family: inherit; font-size: 16px; width: 100%; outline: none; font-weight: 500;">
+                </div>
+
+                <div class="glass-card" style="padding: 16px 20px;">
+                    <p class="caption" style="font-size: 12px; margin-bottom: 6px;">${icon('lock', 'var(--text-secondary)', 14)} Crie um PIN de 4 dígitos</p>
+                    <input type="password" id="register-pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="••••" required style="background: none; border: none; color: var(--text-primary); font-family: inherit; font-size: 24px; width: 100%; outline: none; font-weight: 700; letter-spacing: 12px; text-align: center;">
+                </div>
+
+                <div class="glass-card" style="padding: 16px 20px;">
+                    <p class="caption" style="font-size: 12px; margin-bottom: 6px;">${icon('lock', 'var(--text-secondary)', 14)} Confirme o PIN</p>
+                    <input type="password" id="register-pin-confirm" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="••••" required style="background: none; border: none; color: var(--text-primary); font-family: inherit; font-size: 24px; width: 100%; outline: none; font-weight: 700; letter-spacing: 12px; text-align: center;">
+                </div>
+                
+                <button class="btn btn-primary" style="padding: 18px; width: 100%; font-size: 16px; margin-top: 16px;" onclick="completeRegistration()">
+                    Começar a usar
+                </button>
+            </div>
+        </div>
+        `;
+    },
+
     dashboard: () => `
         <div class="content-area animate-in">
             <header style="margin-bottom: 32px; display: flex; justify-content: space-between; align-items: center;">
@@ -713,7 +775,7 @@ const Screens = {
 
             <!-- Seção de Vencimentos -->
             ${(() => {
-                const today = new Date().toISOString().split('T')[0];
+                const today = getLocalDate();
                 const expiringToday = state.transactions.filter(t => t.status === 'pending' && t.dueDate === today);
                 
                 if (expiringToday.length === 0) return '';
@@ -1099,7 +1161,7 @@ const Screens = {
                     </div>
                     <span style="font-weight: 700; font-size: 16px; color: var(--text-primary);">Comprovante de ${tx.amount < 0 ? 'pagamento' : 'recebimento'}</span>
                 </div>
-                <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 32px;">${formattedDate} às 10:33</p>
+                <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 32px;">${formattedDate}${tx.time ? ` às ${tx.time}` : ''}</p>
                 
                 <div style="margin-bottom: 32px;">
                     <p style="font-weight: 700; font-size: 16px; text-transform: uppercase; color: var(--text-primary); letter-spacing: 0.5px; margin-bottom: 4px;">${tx.description}</p>
@@ -1261,48 +1323,77 @@ const Screens = {
                 <div style="width: 40px;"></div>
             </header>
 
-            <div class="glass-card" style="padding: 24px;">
-                <h2 class="h2">Seus Dados</h2>
-                <div style="margin-top: 16px;">
-                    <label style="font-size: 14px; color: var(--text-secondary);">Nome</label>
-                    <input id="profile-name" type="text" value="${state.user?.name || 'Seu Nome'}" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 8px; margin-top: 4px; font-weight: 500;">
+            <!-- Avatar e Dados -->
+            <div class="glass-card" style="padding: 24px; text-align: center; margin-bottom: 16px;">
+                <div style="width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; box-shadow: 0 4px 16px rgba(59,130,246,0.3);">
+                    <span style="color: white; font-size: 28px; font-weight: 700;">${(state.user?.name || 'U').charAt(0).toUpperCase()}</span>
                 </div>
-                <div style="margin-top: 16px;">
-                    <label style="font-size: 14px; color: var(--text-secondary);">Email</label>
-                    <input id="profile-email" type="email" value="${state.user?.email || 'seu@email.com'}" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 8px; margin-top: 4px; font-weight: 500;">
-                </div>
-                
-                <button class="btn btn-primary" style="width: 100%; margin-top: 24px;" onclick="saveProfile()">Salvar Dados</button>
+                <h2 class="h2" style="margin-bottom: 4px;">${state.user?.name || 'Seu Nome'}</h2>
+                <p class="caption">${state.user?.email || 'seu@email.com'}</p>
             </div>
 
-            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
-                <h2 class="h2">Exportar Relatório</h2>
-                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Gere um arquivo CSV compatível com Excel com todos os seus lançamentos.</p>
-                <button class="btn btn-primary" style="width: 100%; background: var(--success); display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="exportToExcel()">
-                    ${icon('file-spreadsheet', '#fff', 20)}
-                    Exportar para Excel (CSV)
-                </button>
+            <div class="glass-card" style="padding: 24px;">
+                <h2 class="h2" style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+                    ${icon('user-cog', 'var(--accent-blue)', 20)} Editar Dados
+                </h2>
+                <div style="margin-bottom: 12px;">
+                    <label style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Nome</label>
+                    <input id="profile-name" type="text" value="${state.user?.name || ''}" placeholder="Seu nome" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 10px; margin-top: 4px; font-weight: 500; font-family: inherit; font-size: 15px;">
+                </div>
+                <div style="margin-bottom: 12px;">
+                    <label style="font-size: 13px; color: var(--text-secondary); font-weight: 500;">Email</label>
+                    <input id="profile-email" type="email" value="${state.user?.email || ''}" placeholder="seu@email.com" style="width: 100%; border: none; background: rgba(0,0,0,0.05); padding: 12px; border-radius: 10px; margin-top: 4px; font-weight: 500; font-family: inherit; font-size: 15px;">
+                </div>
+                
+                <button class="btn btn-primary" style="width: 100%; margin-top: 8px;" onclick="saveProfile()">Salvar Alterações</button>
             </div>
-            
-            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
-                <h2 class="h2">Segurança</h2>
-                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Proteja seu acesso com um código PIN ou biometria.</p>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                    <span style="font-weight: 500;">Ativar bloqueio</span>
+
+            <div class="glass-card" style="padding: 24px; margin-top: 16px;">
+                <h2 class="h2" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    ${icon('shield', 'var(--accent-blue)', 20)} Segurança
+                </h2>
+                <p class="caption" style="margin-bottom: 16px;">Gerencie seu PIN e configurações de acesso.</p>
+                
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(0,0,0,0.03); border-radius: 10px; margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        ${icon('lock', 'var(--text-secondary)', 18)}
+                        <span style="font-weight: 500; font-size: 14px;">Bloqueio por PIN</span>
+                    </div>
                     <label class="switch">
                         <input type="checkbox" ${state.security.enabled ? 'checked' : ''} onchange="toggleSecurity(this.checked)">
                         <span class="slider round"></span>
                     </label>
                 </div>
+                
                 ${state.security.enabled ? `
-                <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue);" onclick="navigate('setupSecurity')">Alterar PIN</button>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--accent-blue); color: var(--accent-blue); display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="navigate('setupSecurity')">
+                        ${icon('key', 'var(--accent-blue)', 16)} Alterar PIN
+                    </button>
+                    <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--accent-purple); color: var(--accent-purple); display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="showChangePinInline()">
+                        ${icon('fingerprint', 'var(--accent-purple)', 16)} Biometria ${state.security.biometrics ? '(Ativada)' : '(Desativada)'}
+                    </button>
+                </div>
                 ` : ''}
             </div>
 
-            <div class="glass-card" style="padding: 24px; margin-top: 24px;">
-                <h2 class="h2">Limpar Dados</h2>
-                <p class="caption" style="margin-top: 8px; margin-bottom: 16px;">Apague todos os dados locais armazenados no seu dispositivo.</p>
-                <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--error); color: var(--error);" onclick="clearAllData()">Limpar Tudo</button>
+            <div class="glass-card" style="padding: 24px; margin-top: 16px;">
+                <h2 class="h2" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    ${icon('file-spreadsheet', 'var(--success)', 20)} Exportar Dados
+                </h2>
+                <p class="caption" style="margin-bottom: 16px;">Gere um CSV com todos os lançamentos.</p>
+                <button class="btn btn-primary" style="width: 100%; background: var(--success); display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="exportToExcel()">
+                    ${icon('download', '#fff', 18)}
+                    Exportar para Excel
+                </button>
+            </div>
+
+            <div class="glass-card" style="padding: 24px; margin-top: 16px; border: 1px solid rgba(239,68,68,0.2);">
+                <h2 class="h2" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--error);">
+                    ${icon('alert-triangle', 'var(--error)', 20)} Zona de Perigo
+                </h2>
+                <p class="caption" style="margin-bottom: 16px;">Apague todos os dados ou redefina seu acesso.</p>
+                <button class="btn btn-secondary" style="width: 100%; border: 1px solid var(--error); color: var(--error);" onclick="clearAllData()">Limpar Todos os Dados</button>
             </div>
         </div>
     `
@@ -1342,7 +1433,7 @@ function render() {
     const app = document.getElementById('app');
     const screenHtml = Screens[state.currentScreen]();
     
-    const showNav = ['dashboard', 'extract', 'report', 'accountability', 'profile'].includes(state.currentScreen);
+    const showNav = ['dashboard', 'extract', 'report', 'accountability', 'profile'].includes(state.currentScreen) && state.currentScreen !== 'register';
     const navHtml = showNav ? renderNavBar() : '';
     
     const blobsHtml = `
@@ -1356,6 +1447,55 @@ function render() {
     
     // Initialize Lucide icons
     lucide.createIcons();
+}
+
+// --- Funções de Registro ---
+window.completeRegistration = async function() {
+    const name = document.getElementById('register-name').value.trim();
+    const email = document.getElementById('register-email').value.trim();
+    const pin = document.getElementById('register-pin').value.trim();
+    const pinConfirm = document.getElementById('register-pin-confirm').value.trim();
+
+    if (!name) {
+        showToast('Por favor, informe seu nome.', 'warning');
+        return;
+    }
+    if (!email) {
+        showToast('Por favor, informe seu email.', 'warning');
+        return;
+    }
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        showToast('O PIN deve ter exatamente 4 dígitos numéricos.', 'warning');
+        return;
+    }
+    if (pin !== pinConfirm) {
+        showToast('Os PINs não coincidem. Tente novamente.', 'error');
+        return;
+    }
+
+    // Salvar dados do usuário
+    state.user = { name, email };
+    await database.set('user', JSON.stringify(state.user));
+
+    // Configurar segurança com o PIN
+    state.security = {
+        enabled: true,
+        pin: pin,
+        isLocked: false
+    };
+    await database.set('security', JSON.stringify(state.security));
+
+    // Marcar como registrado
+    await database.set('user_registered', 'true');
+    await database.set('wallets', JSON.stringify(state.wallets));
+    await database.set('app_initialized_v2', 'true');
+
+    showToast(`Bem-vindo, ${name}! 🎉`, 'success');
+    navigate('dashboard');
+}
+
+window.showChangePinInline = function() {
+    showToast('Use a opção "Alterar PIN" acima para redefinir.', 'info');
 }
 
 // Start

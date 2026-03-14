@@ -1,66 +1,34 @@
-# Plano de Tarefas: Carteira Digital Antigravity (Versão Evoluída)
+# Plano de Correições - Carteira App
 
-## Objetivo
-Desenvolver uma aplicação de carteira digital completa e visualmente impactante, focada na separação de fluxos financeiros (Pessoal, Corporativo, Benefício) e na facilidade de prestação de contas.
+## Problemas Identificados
 
-## Fase Atual
-Fase 4: Lógica e Navegação (Evolução dos Requisitos)
+### 1. Fluxo de Primeiro Acesso (CRÍTICO)
+- **Problema**: App inicia no Dashboard direto, sem tela de registro
+- **Esperado**: 1º acesso → Registro (nome/email/PIN) → Dashboard. Acessos seguintes → Login via PIN/biometria
+- **Causa**: `initState()` não verifica se é primeiro acesso real, apenas se `app_initialized_v2` existe
 
-## Fases do Projeto
+### 2. Perfil não permite alterar dados de acesso
+- **Problema**: Tela de perfil não tem opção de alterar nome/email/PIN de forma integrada
+- **Esperado**: Seção na tela de perfil com todos os campos editáveis
 
-### Fase 1: Base e Estética (Concluída 🚀)
-- [x] Criação do Sistema de Design (CSS Vanilla) com Glassmorphism.
-- [x] Container principal e navegação SPA básica.
-- [x] Dashboard Inicial com cartões de saldo.
-- [x] Teclado Numérico Customizado para entrada de valores.
+### 3. Bug de Fuso Horário nas Datas
+- **Problema**: Entrada às 22:04 de 13/03 → registrada como 14/03 10:04
+- **Causa**: `new Date().toISOString().split('T')[0]` usa UTC, não horário local
+- **Fix**: Usar formatação local para a data
 
-### Fase 2: Gestão Multi-Carteira e Agendamento (Em Andamento 🛠️)
-- [x] Implementar IDs de Carteira (Principal, Empresa, Ticket).
-- [ ] Adicionar fluxo de **Agendamento** (Pendente vs Pago).
-- [ ] Implementar campos de `data_vencimento` e `status` nas transações.
-- [ ] Criar alerta visual para contas próximas ao vencimento.
+## Fases
 
-### Fase 3: Módulo de Comprovantes e OCR (Próximo 📸)
-- [ ] Adicionar campo `url_foto` e simular captura de imagem (placeholder).
-- [ ] Criar indicador de `comprovante_pendente` para transações corporativas.
-- [ ] Simular extração de dados (data/valor) via OCR mock.
+### Fase 1: Fix do Fuso Horário [in_progress]
+- Corrigir `saveTransaction()` linha 391 - data usa UTC
+- Corrigir `navigate()` linha 340 - dueDate default usa UTC
+- Corrigir `payTransaction()` linha 493 - data usa UTC
 
-### Fase 4: Prestação de Contas e Relatórios (Próximo 📊)
-- [ ] Criar tela específica para a carteira "Adiantamento/Empresa".
-- [ ] Implementar filtros por categoria e status de conciliação.
-- [ ] Adicionar funcionalidade de "Exportar Relatório" (Simulação de PDF/CSV).
+### Fase 2: Tela de Primeiro Registro [pending]
+- Criar tela `Screens.register` 
+- No `initState()`, verificar se user já tem registro completo
+- Se não tem → redirecionar para registro
+- Registro salva dados + força setup de PIN
 
-### Fase 5: Segurança e Refinamento Final (Finalização ✨)
-- [ ] Adicionar tela de bloqueio (Pin/Biometria mock).
-- [ ] Otimizar UX de swipe e micro-interações.
-- [ ] Garantir suporte Offline First (localStorage robusto).
-
-## Estrutura de Dados (State)
-```javascript
-{
-    wallets: [
-        { id: 'principal', name: 'Principal', type: 'pessoal', balance: 0 },
-        { id: 'empresa', name: 'Adiantamento', type: 'corporativo', balance: 0 },
-        { id: 'ticket', name: 'Ticket', type: 'beneficio', balance: 0 }
-    ],
-    transactions: [
-        { 
-            id: UUID, 
-            description: String, 
-            amount: Decimal, 
-            date: Date, 
-            due_date: Date,
-            status: 'pending' | 'paid',
-            wallet_id: String,
-            category: String,
-            photo_url: String,
-            needs_receipt: Boolean
-        }
-    ]
-}
-```
-
-## Notas Técnicas
-- **Storage:** Usaremos `localStorage` para persistência no protótipo.
-- **Rich Aesthetics:** Manter as animações de entrada e o uso de sombras suaves e gradientes.
-- **Offline:** O app funcionará totalmente offline via navegador.
+### Fase 3: Melhorar Perfil [pending]
+- Adicionar campo para alterar PIN no perfil
+- Melhorar layout dos campos editáveis
