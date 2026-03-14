@@ -32,7 +32,9 @@ jobs:
           java-version: '21'
 
       - name: Sync Capacitor
-        run: npx cap sync android
+        run: |
+          chmod +x node_modules/.bin/cap
+          npx cap sync android
 
       - name: Build with Gradle
         working-directory: android
