@@ -590,7 +590,7 @@ async function saveTransaction(event) {
 
     const newTx = {
         id: Date.now(),
-        date: getLocalDate(),
+        date: dueDate,
         time: getLocalTime(),
         dueDate: dueDate,
         description: description || 'Sem descrição',
@@ -621,7 +621,7 @@ async function saveTransaction(event) {
             allNewTxs.push({
                 ...newTx,
                 id: Date.now() + i,
-                date: getLocalDate(),
+                date: futureDateStr,
                 time: getLocalTime(),
                 dueDate: futureDateStr,
                 status: 'pending',
@@ -828,9 +828,8 @@ function payTransaction(id) {
     // Confirm action
     if (!confirm('Deseja marcar esta transação como paga? O saldo da carteira será atualizado.')) return;
 
-    // Update status and date
+    // Update status
     tx.status = 'approved';
-    tx.date = getLocalDate();
 
     // Update wallet balance
     const walletIndex = state.wallets.findIndex(w => w.id === tx.wallet);
@@ -1196,7 +1195,7 @@ const Screens = {
                     <p class="caption" style="color: var(--accent-blue); cursor: pointer;" onclick="navigate('extract')">Ver tudo</p>
                 </div>
                 <div style="display: flex; flex-direction: column; gap: 12px;">
-                    ${state.transactions.slice(0, 3).map(t => `
+                    ${state.transactions.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map(t => `
                         <div class="glass-card" onclick="showTransactionDetails(${t.id})" style="display: flex; align-items: center; gap: 16px; padding: 14px; cursor: pointer;">
                             <div class="glass" style="width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: ${t.amount < 0 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)'};">
                                 ${icon(t.amount < 0 ? 'arrow-down-right' : 'arrow-up-right', t.amount < 0 ? 'var(--error)' : 'var(--success)', 18)}
